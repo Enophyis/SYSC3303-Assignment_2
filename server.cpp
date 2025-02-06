@@ -14,110 +14,111 @@
 #include <iostream>
 #include <string>
 #include <unistd.h>
+#include <stdexcept>
 #include "Datagram.h"
 
-#define PORT    23
+#define PORT   69
 
 class SimpleEchoServer {
 public:
-    SimpleEchoServer() : sendSocket(), receiveSocket(PORT) {}
+    SimpleEchoServer() :  receiveSocket(PORT) {}
 
 private:
-    // Construct a datagram socket and bind it to any available
-    // port on the local host machine. This socket will be used to
-    // send UDP Datagram packets.
-    DatagramSocket sendSocket;
-
-    // Construct a datagram socket and bind it to port 5000
-    // on the local host machine. This socket will be used to
-    // receive UDP Datagram packets.
     DatagramSocket receiveSocket;
 
 public:
     void receiveAndEcho() {
 	// Construct a DatagramPacket for receiving packets up
 	// to 100 bytes long (the length of the byte array).
+    while(true) {
+        std::vector<uint8_t> data(100);
+        DatagramPacket receivePacket(data, data.size());
 
-	std::vector<uint8_t> data(100);
-	DatagramPacket receivePacket(data, data.size());
-	std::cout << "Server: Waiting for Packet." << std::endl;
+        // Block until a datagram packet is received from receiveSocket.
+        try {
+            std::cout << "[SERVER] Waiting for Intermediate Packet..." << std::endl;
+            receiveSocket.receive(receivePacket);
+        } catch (const std::runtime_error &e) {
+            std::cout << "IO Exception: likely:"
+                      << "Receive Socket Timed Out." << std::endl << e.what() << std::endl;
+            exit(1);
+        }
 
-	// Block until a datagram packet is received from receiveSocket.
-	try {
-	    std::cout << "Waiting..." << std::endl; // so we know we're waiting
-	    receiveSocket.receive(receivePacket);
-	} catch (const std::runtime_error& e ) {
-	    std::cout << "IO Exception: likely:"
-		      << "Receive Socket Timed Out." << std::endl << e.what() << std::endl;
-	    exit(1);
-	}
+        //Process the initial 4 byte opcode
+        const uint8_t* opcodeData = static_cast<const uint8_t*>(receivePacket.getData());
+        std::string opcode;
+        std::vector<uint8_t> responseCode;
+        bool failFlag = false;
+        if (opcodeData[1] == 0x01) {
+            opcode = "READ (0x01)";
+            responseCode.push_back(0x03);
+            responseCode.push_back(0x01);
+        }
+        else if (opcodeData[1] == 0x02) {
+            opcode = "WRITE (0x02)";
+            responseCode.push_back(0x04);
+            responseCode.push_back(0x00);
+        }
+        else {
+            opcode = "INVALID";
+            failFlag = true;
+        }
 
-	// Process the received datagram.
-	std::cout << "Server: Packet received:" << std::endl;
-	std::cout << "From host: " << receivePacket.getAddressAsString() << std::endl;
-	std::cout << "Host port: " << receivePacket.getPort() << std::endl;
-	int len = receivePacket.getLength();
-	std::cout << "Length: " << len << std::endl
-		  << "Containing: ";
+        // Process the received datagram.
+        std::cout << "\n\n[SERVER] PACKET RECEIEVED" << std::endl;
+        std::cout << "From host: " << receivePacket.getAddressAsString() << std::endl;
+        std::cout << "Host port: " << receivePacket.getPort() << std::endl;
+        std::cout << "Opcode: " << opcode << std::endl;
+        std::cout << "String Data: " << std::endl;
+        int len = receivePacket.getLength();
+        std::cout << std::string(static_cast<const char *>(receivePacket.getData()), len) << std::endl; //
+        std::cout << "Raw Hex Data: ";
+        for (size_t i = 0; i < receivePacket.getLength(); i++) {
+            uint8_t byte = static_cast<const uint8_t *>(receivePacket.getData())[i];
+            // Print each byte as 2-character hexadecimal
+            if (byte < 16) { // If the byte is less than 0x10, pad with a '0'
+                std::cout << "0";
+            }
+            std::cout << std::hex << static_cast<int>(byte) << " ";
+        }
+        std::cout << std::endl;
+        if(failFlag)
+        {
+            throw std::runtime_error("Runtime Exception: Invalid Opcode");
+        }
 
-	// Form a String from the byte array.
-	std::string received = std::string( static_cast<const char *>(receivePacket.getData()), receivePacket.getLength() );
-	std::cout << received << std::endl;
+        // Slow things down (wait 5 seconds)
+        std::this_thread::sleep_for(std::chrono::seconds(1));
 
-	// Slow things down (wait 5 seconds)
-	std::this_thread::sleep_for( std::chrono::seconds( 5 ) );
 
-	// Create a new datagram packet containing the string received from the client.
+        //SEND TO INTERMEDIATE
+        DatagramPacket sendPacket(responseCode, receivePacket.getLength(),
+                                  receivePacket.getAddress(), receivePacket.getPort());
 
-	// Construct a datagram packet that is to be sent to a specified port
-	// on a specified host.
-	// The arguments are:
-	//  data - the packet data (a byte array). This is the packet data
-	//         that was received from the client.
-	//  receivePacket.getLength() - the length of the packet data.
-	//    Since we are echoing the received packet, this is the length
-	//    of the received packet's data.
-	//    This value is <= data.length (the length of the byte array).
-	//  receivePacket.getAddress() - the Internet address of the
-	//     destination host. Since we want to send a packet back to the
-	//     client, we extract the address of the machine where the
-	//     client is running from the datagram that was sent to us by
-	//     the client.
-	//  receivePacket.getPort() - the destination port number on the
-	//     destination host where the client is running. The client
-	//     sends and receives datagrams through the same socket/port,
-	//     so we extract the port that the client used to send us the
-	//     datagram, and use that as the destination port for the echoed
-	//     packet.
+        std::cout << "\n\n[SERVER] SENDING PACKET:" << std::endl;
+        std::cout << "To host: " << sendPacket.getAddressAsString() << std::endl;
+        std::cout << "Destination host port: " << sendPacket.getPort() << std::endl;
+        std::cout << "Response Code: ";
+        for (size_t i = 0; i < sendPacket.getLength(); i++) {
+            uint8_t byte = static_cast<const uint8_t *>(sendPacket.getData())[i];
+            // Print each byte as 2-character hexadecimal
+            if (byte < 16) { // If the byte is less than 0x10, pad with a '0'
+                std::cout << "0";
+            }
+            std::cout << std::hex << static_cast<int>(byte) << " ";
+        }
+        std::cout << std::endl;
+        DatagramSocket sendSocket;
+        // Send the datagram packet to the client via the send socket.
+        try {
+            sendSocket.send(sendPacket);
+        } catch (const std::runtime_error &e) {
+            std::cerr << e.what() << std::endl;
+            exit(1);
+        }
 
-	DatagramPacket sendPacket(data, receivePacket.getLength(),
-				  receivePacket.getAddress(), receivePacket.getPort());
-
-	std::cout <<  "Server: Sending packet:" << std::endl;
-	std::cout << "To host: " << sendPacket.getAddressAsString() << std::endl;
-	std::cout << "Destination host port: " << sendPacket.getPort() << std::endl;
-	len = sendPacket.getLength();
-	std::cout << "Length: " << len << std::endl
-		  << "Containing: " << std::endl;
-	std::cout << std::string(static_cast<const char *>(sendPacket.getData()), len) << std::endl; //
-	// or (as we should be sending back the same thing)
-	// System.out.println(received);
-
-	// Send the datagram packet to the client via the send socket.
-	try {
-	    sendSocket.send(sendPacket);
-	} catch ( const std::runtime_error& e ) {
-	    std::cerr << e.what() << std::endl;
-	    exit(1);
-	}
-
-	std::cout << "Server: packet sent" << std::endl;
-
-      // We're finished, so close the sockets.
-      // Sockets will close with RAII
-//      sendSocket.close();
-//      receiveSocket.close();
-      return;
+        std::cout << "\nServer: packet sent" << std::endl;
+    }
    }
 };
 
